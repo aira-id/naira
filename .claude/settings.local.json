@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk find *)",
+      "Bash(rtk go *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk ls *)",
+      "Bash(go mod *)",
+      "Bash(gofmt -l .)",
+      "Bash(gofmt -w .)",
+      "WebSearch"
+    ]
+  }
+}
