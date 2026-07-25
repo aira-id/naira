@@ -54,6 +54,17 @@ stays exercisable without those binaries installed.
 
 ## Build & Run
 
+Whisper.cpp/llama.cpp/piper aren't vendored — build/fetch them with:
+
+```
+scripts/install_deps.sh          # builds whisper-server + llama-server (AVX-only,
+                                  # see RFC.md Performance Requirement), fetches piper
+scripts/install_deps.sh --help   # all options (--prefix, --skip-*, --force, ...)
+```
+
+Then point `server_bin` at the installed paths in `~/.naira/models.yaml` (or
+let the default template's blank `server_bin` fall back to stubs).
+
 ```
 go build -o naira ./cmd/naira
 
