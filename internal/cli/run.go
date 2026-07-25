@@ -19,6 +19,7 @@ import (
 	"naira/internal/adapter/network"
 	"naira/internal/adapter/process"
 	"naira/internal/adapter/repository"
+	"naira/internal/adapter/sound"
 	"naira/internal/adapter/tts"
 	"naira/internal/adapter/ui"
 	"naira/internal/adapter/vad"
@@ -39,6 +40,9 @@ func newRunCmd() *cobra.Command {
 	var uiPort int
 	var uiBrowserBin string
 	var uiBrowserArgs []string
+	var soundEnabled bool
+	var soundPlayerBin string
+	var soundPlayerArgs []string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -154,6 +158,16 @@ instead.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: tts.server_bin not set in models.yaml — TTS disabled (stub, logs instead of speaking)")
 			}
 
+			var soundBoard domain.SoundBoard
+			if soundEnabled {
+				soundBoard = sound.NewBoard(soundPlayerBin, soundPlayerArgs)
+				go func() {
+					if err := soundBoard.Play(cmd.Context(), domain.SoundGreeting); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: greeting sound playback failed: %v\n", err)
+					}
+				}()
+			}
+
 			uiServer := ui.NewServer(uiPort)
 			if err := uiServer.Start(cmd.Context()); err != nil {
 				return fmt.Errorf("start ui server: %w", err)
@@ -173,6 +187,7 @@ instead.`,
 				TTS:          ttsEngine,
 				Agent:        engine.StubAgent{},
 				UI:           uiServer,
+				Sound:        soundBoard,
 				Connectivity: network.NewChecker(),
 				Auth:         engine.StubAuth{},
 			}
@@ -231,6 +246,9 @@ instead.`,
 	cmd.Flags().IntVar(&uiPort, "ui-port", 8090, "loopback port the face UI's HTTP+WebSocket server listens on")
 	cmd.Flags().StringVar(&uiBrowserBin, "ui-browser-bin", "chromium", "browser binary launched in --app kiosk mode to display the face UI (empty = don't auto-launch, open the URL manually)")
 	cmd.Flags().StringSliceVar(&uiBrowserArgs, "ui-browser-args", nil, "extra args passed to the UI browser subprocess (e.g. --window-size=340,340)")
+	cmd.Flags().BoolVar(&soundEnabled, "sound", true, "play greeting/ack/thinking audio cues (assets/sounds/*) alongside the conversation loop")
+	cmd.Flags().StringVar(&soundPlayerBin, "sound-player-bin", "aplay", "playback subprocess binary for audio cues")
+	cmd.Flags().StringSliceVar(&soundPlayerArgs, "sound-player-args", nil, "extra args passed to the audio-cue playback subprocess (e.g. -D plughw:1,0)")
 	return cmd
 }
 

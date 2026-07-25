@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"naira/internal/domain"
 	"naira/internal/idgen"
@@ -17,6 +18,7 @@ import (
 )
 
 // Engines bundles the pluggable subsystem ports the orchestrator needs.
+// Sound is optional (nil disables audio cues entirely).
 type Engines struct {
 	STT          domain.STTEngine
 	LLM          domain.LLMEngine
@@ -25,6 +27,7 @@ type Engines struct {
 	UI           domain.UIPublisher
 	Connectivity domain.ConnectivityChecker
 	Auth         domain.AuthChecker
+	Sound        domain.SoundBoard
 }
 
 type Service struct {
@@ -45,16 +48,23 @@ func New(engines Engines, state *statesvc.Service, gamesDir string) *Service {
 // Conversation Flow) — by the time text reaches here, raw audio has already
 // been discarded.
 func (s *Service) HandleUtterance(ctx context.Context, sessionID, transcript string) error {
+	if s.engines.Sound != nil {
+		go func() { _ = s.engines.Sound.Play(ctx, domain.SoundAck) }()
+	}
 	_ = s.engines.UI.SetState(ctx, domain.ExpressionThinking)
+
+	stopThinking := s.startThinkingLoop(ctx)
 
 	var sb strings.Builder
 	out, err := s.engines.LLM.Infer(ctx, transcript, func(sentence string) {
+		stopThinking()
 		sb.WriteString(sentence)
 		if err := s.engines.TTS.Speak(ctx, sentence); err != nil {
 			// Best-effort: a dropped sentence shouldn't abort the turn.
 			return
 		}
 	})
+	stopThinking()
 	if err != nil {
 		return fmt.Errorf("llm infer: %w", err)
 	}
@@ -73,6 +83,41 @@ func (s *Service) HandleUtterance(ctx context.Context, sessionID, transcript str
 
 	_ = s.engines.UI.SetState(ctx, domain.ExpressionIdle)
 	return nil
+}
+
+// startThinkingLoop plays domain.SoundThinking on repeat (one clip at a
+// time, blocking between repeats) until the returned stop func is called —
+// wired to fire on the LLM's first streamed sentence, so the hum only fills
+// the gap while the model is still generating (be-more-agent's
+// thinking_sound_active pattern). Safe to call stop multiple times or when
+// Sound is nil.
+func (s *Service) startThinkingLoop(ctx context.Context) func() {
+	if s.engines.Sound == nil {
+		return func() {}
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			default:
+			}
+			_ = s.engines.Sound.Play(ctx, domain.SoundThinking)
+		}
+	}()
+
+	return func() {
+		once.Do(func() { close(stop) })
+		<-done
+	}
 }
 
 var nameSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)

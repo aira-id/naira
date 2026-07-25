@@ -37,6 +37,10 @@ full design rationale and [PRD.md](./PRD.md) for product requirements.
 - Server caches the last `state_change`/`window_mode` frame and replays it to newly-connected clients (`internal/adapter/ui.Server.lastState`/`lastMode`) — without this, a browser reload would get stuck showing the initial splash forever since broadcast-only WS has no history.
 - **Known gap**: a plain browser tab can't do real OS-level frameless/transparent/always-on-top window management, so `window_mode`'s FLOATING mode only shrinks/corner-docks the face within the page rather than moving a true small overlay window (see RFC.md §5 Concerns).
 
+### Audio cues
+- `domain.SoundBoard` (new port) + `internal/adapter/sound.Board` — plays a random `.wav` from `assets/sounds/{greeting,ack,thinking}_sounds/` (embedded via `go:embed`, piped into `aplay`/`--sound-player-bin` via stdin, no temp files), gated behind `--sound` (default on). Best-effort: playback errors are logged, never abort the conversation turn.
+- Wired into `internal/usecase/conversation.Service`: greeting plays once at `naira run` startup; ack plays (fire-and-forget) the moment an utterance is handed to the LLM; a thinking-loop plays on repeat until the LLM's first streamed sentence arrives, then stops (`Service.startThinkingLoop`). Ported from the reference `be-more-agent` Python implementation this project is inspired by — those `.wav` assets were already vendored (`assets/sounds/`) but unused until now.
+
 ### Docs
 - `RFC.md` — full technical design, mermaid diagrams (architecture, sequence flows, rollout), kept in sync with every architectural decision made during implementation (CGo→subprocess, SQLite→flat JSON, VAD addition, etc).
 - `README.md` — privacy/data-handling disclosure (parent-facing, matches `naira setup` output), architecture overview, build/run instructions.

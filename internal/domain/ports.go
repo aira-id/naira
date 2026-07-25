@@ -122,3 +122,21 @@ type UIPublisher interface {
 	MouthAmplitude(ctx context.Context, amplitude float64, tsMillis int64) error
 	AgentStatus(ctx context.Context, status, jobID string) error
 }
+
+// SoundCategory selects which pre-recorded audio-cue folder to pick a random
+// clip from (assets/sounds/<category>_sounds/*.wav) — distinct from TTS:
+// short fixed cues, not synthesized speech.
+type SoundCategory string
+
+const (
+	SoundGreeting SoundCategory = "greeting" // played once at startup
+	SoundAck      SoundCategory = "ack"      // played right after an utterance is captured
+	SoundThinking SoundCategory = "thinking" // looped while waiting for the LLM's first sentence
+)
+
+// SoundBoard plays a random pre-recorded clip from category. Best-effort:
+// implementations should never let a missing/corrupt clip or playback
+// failure interrupt the conversation loop.
+type SoundBoard interface {
+	Play(ctx context.Context, category SoundCategory) error
+}
