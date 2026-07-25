@@ -204,3 +204,14 @@ func (s *Server) AgentStatus(ctx context.Context, status, jobID string) error {
 		JobID  string `json:"job_id"`
 	}{"agent_status", status, jobID}, nil)
 }
+
+// SpeakChunk implements domain.UIPublisher (speak_chunk, RFC.md#apis). Not
+// cached for replay (see broadcast's cacheSlot) — a caption is only
+// meaningful in the moment it's spoken, unlike state_change/window_mode.
+func (s *Server) SpeakChunk(ctx context.Context, text string, seq int) error {
+	return s.broadcast(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+		Seq  int    `json:"seq"`
+	}{"speak_chunk", text, seq}, nil)
+}

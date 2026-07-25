@@ -121,6 +121,10 @@ type UIPublisher interface {
 	SetWindowMode(ctx context.Context, floating bool, w, h int) error
 	MouthAmplitude(ctx context.Context, amplitude float64, tsMillis int64) error
 	AgentStatus(ctx context.Context, status, jobID string) error
+	// SpeakChunk pushes one sentence of the spoken response as an optional
+	// subtitle/caption, alongside TTS (RFC.md#apis speak_chunk). seq is a
+	// per-turn, 0-based, monotonically increasing counter.
+	SpeakChunk(ctx context.Context, text string, seq int) error
 }
 
 // SoundCategory selects which pre-recorded audio-cue folder to pick a random

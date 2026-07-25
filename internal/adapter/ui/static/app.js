@@ -6,6 +6,7 @@
   const sprite = document.getElementById("sprite");
   const mouth = document.getElementById("mouth");
   const badge = document.getElementById("agent-badge");
+  const caption = document.getElementById("caption");
 
   // Real drawn sprite frames (assets/faces/) — only 4 of the 9
   // domain.ExpressionTag states have art yet; the rest fall back to the
@@ -56,6 +57,10 @@
       case "state_change":
         stage.dataset.state = msg.state;
         applyState(msg.state);
+        if (msg.state === "IDLE") {
+          caption.hidden = true;
+          caption.textContent = "";
+        }
         break;
       case "mouth_amplitude": {
         const amp = Math.max(0, Math.min(1, msg.amplitude));
@@ -74,6 +79,10 @@
         if (msg.status === "DONE" || msg.status === "FAILED") {
           badgeTimer = setTimeout(() => { badge.hidden = true; }, 4000);
         }
+        break;
+      case "speak_chunk":
+        caption.textContent = msg.text || "";
+        caption.hidden = !msg.text;
         break;
     }
   }

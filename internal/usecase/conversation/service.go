@@ -56,9 +56,12 @@ func (s *Service) HandleUtterance(ctx context.Context, sessionID, transcript str
 	stopThinking := s.startThinkingLoop(ctx)
 
 	var sb strings.Builder
+	seq := 0
 	out, err := s.engines.LLM.Infer(ctx, transcript, func(sentence string) {
 		stopThinking()
 		sb.WriteString(sentence)
+		_ = s.engines.UI.SpeakChunk(ctx, sentence, seq)
+		seq++
 		if err := s.engines.TTS.Speak(ctx, sentence); err != nil {
 			// Best-effort: a dropped sentence shouldn't abort the turn.
 			return
@@ -132,6 +135,14 @@ func sanitizeName(raw string) string {
 	return name
 }
 
+// speak pushes text as a one-off caption (seq 0 — these are standalone
+// fallback messages, not part of a streamed multi-sentence turn) alongside
+// TTS, for the single-shot fallback responses below.
+func (s *Service) speak(ctx context.Context, text string) error {
+	_ = s.engines.UI.SpeakChunk(ctx, text, 0)
+	return s.engines.TTS.Speak(ctx, text)
+}
+
 // dispatchAgent implements the gated EXECUTE_AGENT flow: connectivity check,
 // then auth check, then sandboxed subprocess dispatch — with a vocal
 // fallback at either gate (RFC.md#sequence EXECUTE_AGENT Game Generation Flow).
@@ -142,12 +153,12 @@ func (s *Service) dispatchAgent(ctx context.Context, sessionID string, out domai
 
 	if !s.engines.Connectivity.Online(ctx) {
 		_ = s.engines.UI.AgentStatus(ctx, "OFFLINE_BLOCKED", jobID)
-		return s.engines.TTS.Speak(ctx, "I need internet for that, and we're offline right now.")
+		return s.speak(ctx, "I need internet for that, and we're offline right now.")
 	}
 
 	if !s.engines.Auth.Authorized(ctx) {
 		_ = s.engines.UI.AgentStatus(ctx, "UNAUTHORIZED", jobID)
-		return s.engines.TTS.Speak(ctx, "I can't build apps yet — my agent isn't set up.")
+		return s.speak(ctx, "I can't build apps yet — my agent isn't set up.")
 	}
 
 	name := sanitizeName(out.Text)
@@ -160,7 +171,7 @@ func (s *Service) dispatchAgent(ctx context.Context, sessionID string, out domai
 		if reason == "" && err != nil {
 			reason = err.Error()
 		}
-		return s.engines.TTS.Speak(ctx, fmt.Sprintf("Sorry, I couldn't finish building that. (%s)", reason))
+		return s.speak(ctx, fmt.Sprintf("Sorry, I couldn't finish building that. (%s)", reason))
 	}
 
 	if _, saveErr := s.state.RegisterGeneratedApp(ctx, name, "game", result.IndexHTMLPath, out.Text); saveErr != nil {
@@ -174,7 +185,7 @@ func (s *Service) dispatchAgent(ctx context.Context, sessionID string, out domai
 func (s *Service) dispatchOpenBrowser(ctx context.Context, out domain.LLMOutput) error {
 	if !s.engines.Connectivity.Online(ctx) {
 		_ = s.engines.UI.SetState(ctx, domain.ExpressionSympathetic)
-		return s.engines.TTS.Speak(ctx, "I can't open that right now — we're offline.")
+		return s.speak(ctx, "I can't open that right now — we're offline.")
 	}
 	_ = s.engines.UI.SetWindowMode(ctx, true, 250, 250)
 	return nil

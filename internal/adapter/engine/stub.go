@@ -81,3 +81,8 @@ func (StubUI) AgentStatus(ctx context.Context, status, jobID string) error {
 	slog.Info("ui agent_status (stub)", "status", status, "job_id", jobID)
 	return nil
 }
+
+func (StubUI) SpeakChunk(ctx context.Context, text string, seq int) error {
+	slog.Info("ui speak_chunk (stub)", "text", text, "seq", seq)
+	return nil
+}
