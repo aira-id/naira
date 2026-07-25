@@ -13,10 +13,12 @@ type ModelsConfig struct {
 
 // ModelEntry describes one model artifact. ConfigPath is only used by TTS
 // (Piper ships a companion .onnx.json); it is empty for STT/LLM.
-// ServerBin/Port/Args are used by STT/LLM/WakeWord, which run as standalone
-// server subprocesses supervised by the orchestrator (whisper-server,
-// llama-server, and scripts/openwakeword_server.py respectively) rather than
-// CGo bindings (RFC.md#architecture--tech-stack, decision note).
+// ServerBin/Args are used by every subsystem to run without CGo bindings
+// (RFC.md#architecture--tech-stack, decision note): for STT/LLM/WakeWord it's
+// a long-lived, orchestrator-supervised HTTP server (whisper-server,
+// llama-server, scripts/openwakeword_server.py — Port also applies); for TTS
+// it's the `piper` CLI binary, spawned fresh per sentence since Piper ships
+// no server mode (Port is unused there).
 type ModelEntry struct {
 	Engine     string   `yaml:"engine" mapstructure:"engine"`
 	Model      string   `yaml:"model,omitempty" mapstructure:"model"`
@@ -31,8 +33,9 @@ type ModelEntry struct {
 	Args       []string `yaml:"args,omitempty" mapstructure:"args"`
 }
 
-// HasServer reports whether this entry is configured to run as a supervised
-// subprocess (STT/LLM only — see ServerBin doc above).
+// HasServer reports whether this entry is configured with a subprocess
+// binary path (see ServerBin doc above) — a supervised long-lived server
+// for STT/LLM/WakeWord, or the piper CLI binary for TTS.
 func (e ModelEntry) HasServer() bool {
 	return e.ServerBin != ""
 }

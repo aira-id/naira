@@ -85,7 +85,7 @@ Core interaction loop, memory constraints, and skill catalog are defined in [PRD
 | Energy-based VAD (pure Go, in-process) | Utterance endpointing (speech/silence per frame) | RMS threshold + adaptive noise floor; runs per 20ms frame — too fine-grained for a subprocess call. Upgrade path: WebRTC VAD (small CGo lib) if energy-based proves insufficient in Phase 1 benchmarking |
 | Wake-word detector — `openWakeWord` (pure ONNX, no CGo), standalone `scripts/openwakeword_server.py` subprocess | Trigger for LISTENING state | Spawned + supervised like `whisper-server`/`llama-server` (HTTP on loopback only, `internal/adapter/wakeword.HTTPDetector`); ships with a **stock pretrained phrase** (`hey_jarvis_v0.1`, config default `wake_word: "hey jarvis"`) — no custom "Hey Naira" model trained yet, see [§5 Concerns](#5-concerns-questions-or-known-limitations) |
 | `Qwen2.5-1.5B-Instruct` or `Llama-3.2-1B-Instruct` (GGUF `Q4_K_M`) | LLM weights | Context capped at 1024 tokens; identifier/path set in `models.yaml`, see [Configuration](#configuration) |
-| Piper TTS (`id_ID-news_tts-medium.onnx`) via ONNX Runtime CGo | TTS | Verified real voice ID (corrects earlier placeholder `id_ID-indotts-medium`); identifier/path set in `models.yaml` |
+| Piper TTS (`id_ID-news_tts-medium.onnx`) via standalone `piper` CLI subprocess, spawned per sentence | TTS | Verified real voice ID (corrects earlier placeholder `id_ID-indotts-medium`); identifier/path set in `models.yaml`. No CGo — `piper --output-raw` pipes directly into a playback subprocess (`internal/adapter/tts.PiperCLI`, `--tts-player-bin`, default `aplay`), same no-CGo posture as STT/LLM/wake-word; see decision note below |
 | Go `webview` / Neutralinojs / HTML5 Canvas | UI rendering | Must support frameless, transparent, always-on-top windows |
 | Claude CLI / OpenCode CLI | `EXECUTE_AGENT` skill only | Requires network + valid key/auth; gated, not a hard dependency of core loop |
 | Go stdlib `encoding/json` | Local state persistence (flat file, no DB dependency) | See [Local State Storage](#local-state-storage) |
@@ -113,7 +113,7 @@ graph TB
         STT["whisper-server (subprocess)<br/>HTTP/loopback, in-memory only"]
         PARSER[Intent Parser /<br/>Tag Router]
         LLM["llama-server (subprocess)<br/>-t 2, ctx=1024, --mlock<br/>HTTP/loopback, streaming"]
-        TTS["Piper TTS (ONNX CGo)<br/>id_ID-news_tts-medium"]
+        TTS["Piper TTS (piper CLI subprocess)<br/>id_ID-news_tts-medium"]
         STATE[State Machine<br/>expression + window mode]
         DB[(state.json<br/>atomic write)]
         CONN{Connectivity<br/>Check}
@@ -177,13 +177,15 @@ graph TB
 2. **Wake Word** — standalone `scripts/openwakeword_server.py` subprocess (openWakeWord, pure ONNX inference, stock pretrained phrase `hey_jarvis_v0.1`), spawned/supervised the same way as STT/LLM and called over HTTP on `127.0.0.1` only (`internal/adapter/wakeword.HTTPDetector`). Gates STT/LLM activation — nothing is transcribed until it fires. Falls back to a never-fires `NoOp` stub if `wakeword.server_bin` is unset in `models.yaml`.
 3. **STT** — standalone `whisper-server` binary (from `whisper.cpp`, model `base`/`small`, `int8` quant), spawned as a subprocess by the orchestrator's process supervisor and called over HTTP on `127.0.0.1` only. Only invoked after wake-word detection; raw PCM buffer discarded immediately after transcription (see [Security Implications](#security-implications)). Chosen over CGo bindings for build simplicity and crash isolation — see rationale below.
 3. **LLM** — standalone `llama-server` binary (from `llama.cpp`, compiled strictly `GGML_AVX=ON / AVX2=OFF / FMA=OFF / F16C=OFF`), spawned as a subprocess and called over HTTP (streaming) on `127.0.0.1` only. Runtime flags `-t 2` (one thread per physical core — i5-2510M has 2 physical cores, not 4; see [PRD §5](./PRD.md#5-non-functional-requirements--performance-targets)), context capped 1024 tokens, `--mlock` enabled — all passed as subprocess args from `models.yaml`.
-4. **TTS** — Piper via ONNX Runtime CGo, streamed sentence-by-sentence from LLM output for latency.
+4. **TTS** — standalone `piper` CLI binary (from `piper-tts`), spawned fresh per sentence (not a supervised long-lived server — Piper ships no HTTP server mode) via `internal/adapter/tts.PiperCLI`, piping `--output-raw` PCM directly into a playback subprocess (`--tts-player-bin`, default `aplay`) without buffering the whole utterance, preserving the sentence-by-sentence streaming design's latency win. Falls back to `StubTTS` (logs instead of speaking) if `tts.server_bin` is unset in `models.yaml`.
 5. **UI** — Go `webview` / Neutralinojs, frameless/transparent/always-on-top capable, driven over local WebSocket/native IPC from orchestrator.
 6. **Agent Engine** — Claude CLI / OpenCode, invoked as a subprocess only for `EXECUTE_AGENT`, gated by connectivity + auth checks, sandboxed to its own output directory, memory-bursted (2GB→4GB) only while active.
 7. **Configuration Layer** — `models.yaml` holds STT/LLM/TTS model identifiers and file paths; a `naira models download` CLI subcommand can fetch them automatically, or a parent can place model files manually at the configured path. See [Configuration](#configuration).
 8. **Process Supervisor** — spawns `whisper-server`/`llama-server` as long-lived subprocesses at orchestrator startup, polls until each is accepting connections on its loopback port before marking it ready, and watches for unexpected exit (auto-restart with backoff; see [Monitoring & Alerting](#monitoring--alerting)).
 
-> **CGo vs. standalone subprocess (decision):** STT/LLM run as standalone `whisper-server`/`llama-server` binaries supervised as subprocesses, not linked in via CGo. Rationale: (a) crash isolation — a segfault in the C++ inference engine kills its own process, which the supervisor restarts, rather than taking down the whole orchestrator; (b) simpler Go build — no CGo toolchain/cross-compile complexity tied to the exact AVX build flags; (c) both binaries already support HTTP with token/segment streaming out of the box, so the sentence-by-sentence streaming design ([Sequence](#sequence)) is preserved. Cost accepted: a small localhost HTTP round-trip per call instead of an in-process function call — negligible next to STT/LLM inference time itself. Both servers **must bind `127.0.0.1` only**, never `0.0.0.0` (see [Security Implications](#security-implications)).
+> **CGo vs. standalone subprocess (decision):** STT/LLM/wake-word run as standalone `whisper-server`/`llama-server`/`openwakeword_server.py` processes supervised as long-lived servers, not linked in via CGo. Rationale: (a) crash isolation — a segfault in the C++ inference engine kills its own process, which the supervisor restarts, rather than taking down the whole orchestrator; (b) simpler Go build — no CGo toolchain/cross-compile complexity tied to the exact AVX build flags; (c) STT/LLM already support HTTP with token/segment streaming out of the box, so the sentence-by-sentence streaming design ([Sequence](#sequence)) is preserved. Cost accepted: a small localhost HTTP round-trip per call instead of an in-process function call — negligible next to STT/LLM inference time itself; for wake-word this means one HTTP round-trip per 20ms frame while idle-listening, unbenchmarked on real hardware (see [§5 Concerns](#5-concerns-questions-or-known-limitations)). All three servers **must bind `127.0.0.1` only**, never `0.0.0.0` (see [Security Implications](#security-implications)).
+>
+> **TTS follows the same no-CGo posture, but not the same shape:** Piper ships no server mode at all, so it can't reuse the supervised-server pattern. Instead `piper` is spawned fresh per sentence and its `--output-raw` stdout is piped directly into a playback subprocess (`aplay` by default) — CLI-per-utterance rather than ONNX Runtime CGo. Rationale: consistency with the no-CGo choice made for STT/LLM/wake-word, at the cost of a process-spawn per sentence instead of an in-process call; revisit if that spawn latency proves too costly against the `<2.0s` budget (see [Performance Requirement](#performance-requirement)).
 
 ### Configuration
 
@@ -226,6 +228,8 @@ tts:
   config_path: ./models/id_ID-news_tts-medium.onnx.json
   url: https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx
   sha256: <checksum>
+  server_bin: /usr/local/bin/piper  # piper CLI binary, spawned fresh per sentence (not a supervised server — see decision note above)
+  args: []                          # extra flags appended after --model <path> --config <config_path> --output-raw
 
 wakeword:
   engine: openwakeword

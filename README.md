@@ -67,10 +67,13 @@ All state lives under `~/.naira/` (override with `--home` or `NAIRA_HOME`):
 `state.json` (runtime state), `models.yaml` (STT/LLM/TTS model config),
 `models/` (downloaded model files), `games/` (EXECUTE_AGENT output), `logs/`.
 
-**Current status:** STT/LLM are wired against real `whisper-server`/
-`llama-server` subprocesses when `server_bin` is set in `models.yaml`
-(falls back to a stub otherwise). TTS (Piper) and the Claude CLI / OpenCode
-agent sandbox are still stubbed (see [RFC.md §5 Concerns](./RFC.md#5-concerns-questions-or-known-limitations)).
-`naira run` currently reads plain-text lines from stdin in place of
-wake-word-gated microphone input to exercise the wired orchestrator,
-state persistence, and tag-routing/gating logic end-to-end.
+**Current status:** STT/LLM/wake-word/TTS are wired against real
+`whisper-server`/`llama-server`/`openwakeword_server.py`/`piper` subprocesses
+when the corresponding `server_bin` is set in `models.yaml` (each falls back
+to a stub otherwise). The Claude CLI / OpenCode agent sandbox is still
+stubbed (see [RFC.md §5 Concerns](./RFC.md#5-concerns-questions-or-known-limitations)).
+`naira run --audio` drives real microphone capture through wake-word-gated
+VAD/endpointing/STT/LLM/TTS end-to-end when all four are configured;
+default (no `--audio`) mode reads plain-text lines from stdin in place of
+microphone input, still useful for exercising the orchestrator, state
+persistence, and tag-routing/gating logic without any binaries installed.

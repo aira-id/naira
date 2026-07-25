@@ -18,6 +18,7 @@ import (
 	"naira/internal/adapter/network"
 	"naira/internal/adapter/process"
 	"naira/internal/adapter/repository"
+	"naira/internal/adapter/tts"
 	"naira/internal/adapter/vad"
 	"naira/internal/adapter/wakeword"
 	"naira/internal/config"
@@ -31,6 +32,8 @@ func newRunCmd() *cobra.Command {
 	var audioMode bool
 	var micBin string
 	var micArgs []string
+	var ttsPlayerBin string
+	var ttsPlayerArgs []string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -40,8 +43,11 @@ func newRunCmd() *cobra.Command {
 STT/LLM/wake-word run as standalone subprocesses (whisper-server,
 llama-server, scripts/openwakeword_server.py), supervised (spawned,
 health-polled, auto-restarted) per models.yaml's server_bin/port/args — see
-RFC.md#architecture--tech-stack decision note. If server_bin is unset for a
-subsystem, it falls back to a stub (wake-word: NoOp, never fires) so the
+RFC.md#architecture--tech-stack decision note. TTS (piper) is also a
+standalone subprocess but spawned fresh per sentence instead of supervised,
+since Piper ships no server mode; output is piped into --tts-player-bin
+(default aplay). If server_bin is unset for a subsystem, it falls back to a
+stub (wake-word: NoOp, never fires; TTS: logs instead of speaking) so the
 rest of the orchestrator remains exercisable without those binaries
 installed.
 
@@ -126,10 +132,20 @@ wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: llm.server_bin not set in models.yaml — LLM disabled (stub)")
 			}
 
+			var ttsEngine domain.TTSEngine = engine.StubTTS{}
+			if modelsCfg.TTS.HasServer() {
+				if _, statErr := os.Stat(modelsCfg.TTS.Path); statErr != nil {
+					return fmt.Errorf("tts model file missing at %s: refusing to start piper", modelsCfg.TTS.Path)
+				}
+				ttsEngine = tts.NewPiperCLI(modelsCfg.TTS.ServerBin, modelsCfg.TTS.Path, modelsCfg.TTS.ConfigPath, modelsCfg.TTS.Args, ttsPlayerBin, ttsPlayerArgs)
+			} else {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: tts.server_bin not set in models.yaml — TTS disabled (stub, logs instead of speaking)")
+			}
+
 			engines := convsvc.Engines{
 				STT:          sttEngine,
 				LLM:          llmEngine,
-				TTS:          engine.StubTTS{},
+				TTS:          ttsEngine,
 				Agent:        engine.StubAgent{},
 				UI:           engine.StubUI{},
 				Connectivity: network.NewChecker(),
@@ -185,6 +201,8 @@ wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
 	cmd.Flags().BoolVar(&audioMode, "audio", false, "capture real microphone audio via a subprocess (arecord) instead of reading stdin lines")
 	cmd.Flags().StringVar(&micBin, "mic-bin", "arecord", "recording subprocess binary (arecord/parec)")
 	cmd.Flags().StringSliceVar(&micArgs, "mic-args", nil, "extra args passed to the recording subprocess (e.g. -D plughw:1,0)")
+	cmd.Flags().StringVar(&ttsPlayerBin, "tts-player-bin", "aplay", "playback subprocess binary for synthesized speech")
+	cmd.Flags().StringSliceVar(&ttsPlayerArgs, "tts-player-args", nil, "extra args passed to the playback subprocess (e.g. -D plughw:1,0)")
 	return cmd
 }
 

@@ -23,6 +23,7 @@ full design rationale and [PRD.md](./PRD.md) for product requirements.
 - **STT/LLM run as standalone subprocesses, not CGo** (decision recorded in RFC.md#architecture--tech-stack): `internal/adapter/process` supervises `whisper-server`/`llama-server` (spawn, loopback-port readiness poll, crash auto-restart with backoff, permanent-fail after 5 attempts). `internal/adapter/engine` calls them over loopback HTTP (`WhisperServerSTT` multipart upload, `LlamaServerLLM` streaming completion with proper tag-prefix stripping before anything reaches TTS).
 - **Audio capture, VAD, endpointing** (no CGo): `internal/adapter/audio` (arecord/parec subprocess → fixed 20ms PCM16 frames + in-memory WAV encoding), `internal/adapter/vad` (RMS-threshold + adaptive-noise-floor energy VAD), `internal/usecase/listening` (wake-word-gated capture, ~300ms pre-roll seed, 700ms silence cutoff, 20s max-utterance safety cap).
 - `internal/adapter/wakeword` — `NoOp` stub (never fires, used when `wakeword.server_bin` unset) and `Always` (dev/test-only, never wired into the shipped CLI). **Real engine wired**: `HTTPDetector` calls `scripts/openwakeword_server.py` (openWakeWord, stock pretrained phrase `hey_jarvis_v0.1`), a standalone subprocess supervised the same way as `whisper-server`/`llama-server` — see RFC.md §5 Concerns. No custom "Hey Naira" model trained yet (would require openWakeWord's own training pipeline); default `wake_word` config value is `"hey jarvis"` to match.
+- **Piper TTS wired, CLI-per-utterance subprocess (not CGo)**: `internal/adapter/tts.PiperCLI` spawns `piper` fresh per sentence (Piper ships no server mode, unlike whisper.cpp/llama.cpp — decision recorded in RFC.md#architecture--tech-stack) piping `--output-raw` PCM directly into a playback subprocess (`--tts-player-bin`, default `aplay`) without buffering the whole utterance, preserving sentence-level streaming latency. Sample rate read from Piper's `.onnx.json` config. Falls back to `StubTTS` (logs instead of speaking) if `tts.server_bin` unset in `models.yaml`.
 
 ### CLI
 - `naira setup` — first-run parent consent gate (blocks `run` until accepted), text synced with `README.md`.
@@ -43,20 +44,19 @@ full design rationale and [PRD.md](./PRD.md) for product requirements.
 
 Roughly in the order they'll block progress:
 
-1. **Piper TTS integration** — still a stub that logs instead of speaking. Piper has no official server mode like whisper.cpp/llama.cpp, so needs its own CGo-vs-subprocess decision (likely CLI-per-utterance subprocess, or ONNX Runtime CGo if latency requires it).
-2. **Claude CLI / OpenCode agent sandbox enforcement** — policy is specified (deps-only network, scoped filesystem writes) but not the enforcement primitive (Linux namespaces? restricted user + seccomp? container?). `StubAgent` always fails until this is decided.
-3. **Auth/key storage for Claude CLI / OpenCode** — `StubAuth` always returns unauthorized. Needs OS keyring or `0600`-permission config file, per RFC Security Implications.
-4. **`EXECUTE_AGENT` timeout** — no concrete value wired in yet (RFC suggests ~120s) plus child-facing fallback wording.
-5. **Concurrent `EXECUTE_AGENT` request handling** — behavior undefined if a second request arrives mid-generation (queue vs. reject).
-6. **UI layer** — `StubUI` only logs; no real webview/Neutralinojs window, no mouth-sync animation, no floating-overlay mode.
-7. **Real-hardware benchmarking (Phase 1 blocker)** — `<2.0s` voice latency target (endpointing + STT + LLM first token) unverified on actual i5-2510M under `-t 2`; VAD timing constants (700ms silence / 300ms pre-roll / 20s cap) unvalidated against real child speech patterns; now also covers wake-word HTTP round-trip cost per 20ms frame (`internal/adapter/wakeword.HTTPDetector`), unbenchmarked on real hardware.
-8. **Energy VAD robustness** — pure RMS-threshold classifier is more sensitive to background noise than a spectral classifier; revisit WebRTC VAD (small CGo lib) after real-room Phase 1 testing.
-9. **`models.yaml` checksums** — `sha256` fields ship blank; must be filled in (or accept manual-copy fallback) before `naira models download` will auto-fetch anything. (N/A for the new `wakeword` entry — openWakeWord manages its own model cache, not fetched via this mechanism.)
-10. **Screen-time `[SLEEPY]` behavior** — logging/threshold-check logic exists in the state service but isn't wired into the orchestrator loop or UI yet.
-11. **Claude CLI cost/rate-limit exposure** — no budget or rate-limiting specified; a chatty child could trigger many generation requests.
-12. **Subsystem-failure UX** — process supervisor marks a subsystem permanently unhealthy after exhausting restart attempts, but no UI-facing degraded-mode expression is wired to that yet.
-13. **RFC.md header placeholders** — `Owner`/`Approver` still `_TBD_`.
-14. **Custom "Hey Naira" wake-word model** — current wake-word engine (openWakeWord) is wired and functional but uses a stock pretrained phrase (`hey_jarvis_v0.1`); a custom "Hey Naira" model requires running openWakeWord's own training pipeline, not yet done.
+1. **Claude CLI / OpenCode agent sandbox enforcement** — policy is specified (deps-only network, scoped filesystem writes) but not the enforcement primitive (Linux namespaces? restricted user + seccomp? container?). `StubAgent` always fails until this is decided.
+2. **Auth/key storage for Claude CLI / OpenCode** — `StubAuth` always returns unauthorized. Needs OS keyring or `0600`-permission config file, per RFC Security Implications.
+3. **`EXECUTE_AGENT` timeout** — no concrete value wired in yet (RFC suggests ~120s) plus child-facing fallback wording.
+4. **Concurrent `EXECUTE_AGENT` request handling** — behavior undefined if a second request arrives mid-generation (queue vs. reject).
+5. **UI layer** — `StubUI` only logs; no real webview/Neutralinojs window, no mouth-sync animation, no floating-overlay mode.
+6. **Real-hardware benchmarking (Phase 1 blocker)** — `<2.0s` voice latency target (endpointing + STT + LLM first token) unverified on actual i5-2510M under `-t 2`; VAD timing constants (700ms silence / 300ms pre-roll / 20s cap) unvalidated against real child speech patterns; now also covers wake-word HTTP round-trip cost per 20ms frame (`internal/adapter/wakeword.HTTPDetector`) and per-sentence `piper` process-spawn latency (`internal/adapter/tts.PiperCLI`), both unbenchmarked on real hardware.
+7. **Energy VAD robustness** — pure RMS-threshold classifier is more sensitive to background noise than a spectral classifier; revisit WebRTC VAD (small CGo lib) after real-room Phase 1 testing.
+8. **`models.yaml` checksums** — `sha256` fields ship blank; must be filled in (or accept manual-copy fallback) before `naira models download` will auto-fetch anything. (N/A for the new `wakeword` entry — openWakeWord manages its own model cache, not fetched via this mechanism.)
+9. **Screen-time `[SLEEPY]` behavior** — logging/threshold-check logic exists in the state service but isn't wired into the orchestrator loop or UI yet.
+10. **Claude CLI cost/rate-limit exposure** — no budget or rate-limiting specified; a chatty child could trigger many generation requests.
+11. **Subsystem-failure UX** — process supervisor marks a subsystem permanently unhealthy after exhausting restart attempts, but no UI-facing degraded-mode expression is wired to that yet.
+12. **RFC.md header placeholders** — `Owner`/`Approver` still `_TBD_`.
+13. **Custom "Hey Naira" wake-word model** — current wake-word engine (openWakeWord) is wired and functional but uses a stock pretrained phrase (`hey_jarvis_v0.1`); a custom "Hey Naira" model requires running openWakeWord's own training pipeline, not yet done.
 
 ## Explicitly Out of Scope (v1)
 

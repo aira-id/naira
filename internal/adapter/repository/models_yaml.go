@@ -45,6 +45,8 @@ tts:
   config_path: ./models/id_ID-news_tts-medium.onnx.json
   url: https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx
   sha256: ""
+  server_bin: ""       # path to the piper binary (empty = TTS disabled, stub logs instead of speaking); spawned fresh per sentence, not a supervised server — see ModelEntry doc
+  args: []              # extra flags appended after --model <path> --config <config_path> --output-raw
 
 wakeword:
   engine: openwakeword
