@@ -45,6 +45,16 @@ tts:
   config_path: ./models/id_ID-news_tts-medium.onnx.json
   url: https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx
   sha256: ""
+
+wakeword:
+  engine: openwakeword
+  model: hey_jarvis_v0.1     # stock pretrained phrase (RFC.md §5: no custom "hey naira" model trained yet)
+  path: ./models/openwakeword   # cache dir; openwakeword's own downloader fetches melspectrogram/embedding/wakeword onnx files here on first run
+  url: ""                     # not fetched via naira models download — openwakeword manages its own model cache
+  sha256: ""
+  server_bin: ""              # path to a python3 interpreter (empty = wake-word disabled, falls back to NoOp stub)
+  port: 8082
+  args: ["scripts/openwakeword_server.py", "--model", "hey_jarvis_v0.1", "--cache-dir", "./models/openwakeword", "--threshold", "0.5"]
 `
 
 // EnsureDefault writes the default models.yaml template to path if nothing

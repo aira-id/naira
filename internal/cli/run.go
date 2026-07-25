@@ -37,20 +37,21 @@ func newRunCmd() *cobra.Command {
 		Short: "Start the core orchestrator loop",
 		Long: `Start the core orchestrator loop.
 
-STT/LLM run as standalone whisper-server/llama-server subprocesses,
-supervised (spawned, health-polled, auto-restarted) per models.yaml's
-server_bin/port/args — see RFC.md#architecture--tech-stack decision note.
-If server_bin is unset for a subsystem, it falls back to a stub so the rest
-of the orchestrator (state persistence, tag routing, EXECUTE_AGENT gating)
-remains exercisable without those binaries installed.
+STT/LLM/wake-word run as standalone subprocesses (whisper-server,
+llama-server, scripts/openwakeword_server.py), supervised (spawned,
+health-polled, auto-restarted) per models.yaml's server_bin/port/args — see
+RFC.md#architecture--tech-stack decision note. If server_bin is unset for a
+subsystem, it falls back to a stub (wake-word: NoOp, never fires) so the
+rest of the orchestrator remains exercisable without those binaries
+installed.
 
 Default mode reads plain-text lines from stdin in place of microphone input.
 --audio switches to real capture (arecord subprocess) through the
-VAD-endpointed listening pipeline — but the wake-word detector is currently
-a stub that never fires (RFC.md §5 Concerns: engine unspecified), so nothing
-will be transcribed in --audio mode until a real wake-word engine is wired
-in. This is intentional: the mic-always-open/wake-word-gated privacy
-guarantee must not be bypassed by a CLI flag.`,
+VAD-endpointed listening pipeline. Wake-word detection uses openWakeWord
+(stock pretrained phrase, e.g. "hey jarvis" — no custom "hey naira" model
+trained yet, see RFC.md §5 Concerns) when wakeword.server_bin is set;
+otherwise nothing will be transcribed, by design — the mic-always-open/
+wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := resolveHome()
 			if err != nil {
@@ -99,6 +100,18 @@ guarantee must not be bypassed by a CLI flag.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: stt.server_bin not set in models.yaml — STT disabled (stub)")
 			}
 
+			var wakeDetector domain.WakeWordDetector = wakeword.NoOp{}
+			if modelsCfg.WakeWord.HasServer() {
+				sup := process.New("openwakeword-server", modelsCfg.WakeWord.ServerBin, wakewordServerArgs(modelsCfg.WakeWord), modelsCfg.WakeWord.Port)
+				if err := sup.Start(cmd.Context()); err != nil {
+					return fmt.Errorf("start openwakeword-server: %w", err)
+				}
+				supervisors = append(supervisors, sup)
+				wakeDetector = wakeword.NewHTTPDetector(fmt.Sprintf("http://127.0.0.1:%d", modelsCfg.WakeWord.Port))
+			} else {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: wakeword.server_bin not set in models.yaml — wake-word disabled (stub, never fires)")
+			}
+
 			if modelsCfg.LLM.HasServer() {
 				if _, statErr := os.Stat(modelsCfg.LLM.Path); statErr != nil {
 					return fmt.Errorf("llm model file missing at %s: refusing to start llama-server", modelsCfg.LLM.Path)
@@ -134,9 +147,9 @@ guarantee must not be bypassed by a CLI flag.`,
 				defer stop()
 
 				capture := audio.NewMicCapture(micBin, micArgs)
-				listener := listening.New(capture, wakeword.NoOp{}, vad.NewEnergy(), sttEngine, listening.DefaultOptions())
+				listener := listening.New(capture, wakeDetector, vad.NewEnergy(), sttEngine, listening.DefaultOptions())
 
-				fmt.Fprintln(cmd.OutOrStdout(), "Naira orchestrator running in --audio mode. Wake-word detector is a stub (never fires) — see RFC.md §5 Concerns. Ctrl+C to stop.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Naira orchestrator running in --audio mode. Ctrl+C to stop.")
 				wakeCount := 0
 				runErr := listener.Run(runCtx, func(ctx context.Context, transcript string) {
 					wakeCount++
@@ -182,4 +195,13 @@ guarantee must not be bypassed by a CLI flag.`,
 func serverArgs(entry domain.ModelEntry) []string {
 	args := []string{"-m", entry.Path, "--port", strconv.Itoa(entry.Port), "--host", "127.0.0.1"}
 	return append(args, entry.Args...)
+}
+
+// wakewordServerArgs builds the openwakeword_server.py invocation: entry.Args
+// carries the script path plus --model/--cache-dir/--threshold (its shape
+// differs from whisper-server/llama-server's flags, see models.yaml), with
+// --port appended so it always matches the port the supervisor polls.
+func wakewordServerArgs(entry domain.ModelEntry) []string {
+	args := append([]string{}, entry.Args...)
+	return append(args, "--port", strconv.Itoa(entry.Port))
 }

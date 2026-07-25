@@ -83,7 +83,7 @@ Core interaction loop, memory constraints, and skill catalog are defined in [PRD
 | `llama.cpp` (standalone `llama-server` binary, subprocess) | LLM inference | `-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF`; spawned + supervised by orchestrator, HTTP streaming on loopback only |
 | `arecord`/`parec` (ALSA/PulseAudio CLI, subprocess) | Continuous mic capture → raw PCM16 mono | Spawned once at startup, stdout piped as a continuous frame stream; no CGo audio library needed |
 | Energy-based VAD (pure Go, in-process) | Utterance endpointing (speech/silence per frame) | RMS threshold + adaptive noise floor; runs per 20ms frame — too fine-grained for a subprocess call. Upgrade path: WebRTC VAD (small CGo lib) if energy-based proves insufficient in Phase 1 benchmarking |
-| Wake-word detector (engine TBD) | Trigger for LISTENING state | Currently a stub port (`domain.WakeWordDetector`) that never fires — real engine (Porcupine/openWakeWord) still unselected, see [§5 Concerns](#5-concerns-questions-or-known-limitations) |
+| Wake-word detector — `openWakeWord` (pure ONNX, no CGo), standalone `scripts/openwakeword_server.py` subprocess | Trigger for LISTENING state | Spawned + supervised like `whisper-server`/`llama-server` (HTTP on loopback only, `internal/adapter/wakeword.HTTPDetector`); ships with a **stock pretrained phrase** (`hey_jarvis_v0.1`, config default `wake_word: "hey jarvis"`) — no custom "Hey Naira" model trained yet, see [§5 Concerns](#5-concerns-questions-or-known-limitations) |
 | `Qwen2.5-1.5B-Instruct` or `Llama-3.2-1B-Instruct` (GGUF `Q4_K_M`) | LLM weights | Context capped at 1024 tokens; identifier/path set in `models.yaml`, see [Configuration](#configuration) |
 | Piper TTS (`id_ID-news_tts-medium.onnx`) via ONNX Runtime CGo | TTS | Verified real voice ID (corrects earlier placeholder `id_ID-indotts-medium`); identifier/path set in `models.yaml` |
 | Go `webview` / Neutralinojs / HTML5 Canvas | UI rendering | Must support frameless, transparent, always-on-top windows |
@@ -107,7 +107,7 @@ graph TB
     subgraph CoreRuntime["Go Core Orchestrator — ~8GB pool (always resident)"]
         SUP["Process Supervisor<br/>spawn, health-check,<br/>restart w/ backoff"]
         PREROLL["Pre-roll ring buffer<br/>~300ms lookback"]
-        WAKE["Wake Word Detector<br/>(stub — engine TBD)"]
+        WAKE["Wake Word Detector<br/>openwakeword_server.py (subprocess)<br/>stock phrase: hey_jarvis_v0.1"]
         VAD["Energy VAD<br/>per-frame speech/silence"]
         ENDPT["Endpointing<br/>silence ≥700ms OR max 20s → cut"]
         STT["whisper-server (subprocess)<br/>HTTP/loopback, in-memory only"]
@@ -173,8 +173,9 @@ graph TB
 
 **Component notes:**
 
-1. **Orchestration Layer** — Golang, `go build` (no CGo required for STT/LLM — see below). Owns state machine, IPC hub, the process supervisor, and all subsystem lifecycles.
-2. **STT** — standalone `whisper-server` binary (from `whisper.cpp`, model `base`/`small`, `int8` quant), spawned as a subprocess by the orchestrator's process supervisor and called over HTTP on `127.0.0.1` only. Only invoked after wake-word detection; raw PCM buffer discarded immediately after transcription (see [Security Implications](#security-implications)). Chosen over CGo bindings for build simplicity and crash isolation — see rationale below.
+1. **Orchestration Layer** — Golang, `go build` (no CGo required for STT/LLM/wake-word — see below). Owns state machine, IPC hub, the process supervisor, and all subsystem lifecycles.
+2. **Wake Word** — standalone `scripts/openwakeword_server.py` subprocess (openWakeWord, pure ONNX inference, stock pretrained phrase `hey_jarvis_v0.1`), spawned/supervised the same way as STT/LLM and called over HTTP on `127.0.0.1` only (`internal/adapter/wakeword.HTTPDetector`). Gates STT/LLM activation — nothing is transcribed until it fires. Falls back to a never-fires `NoOp` stub if `wakeword.server_bin` is unset in `models.yaml`.
+3. **STT** — standalone `whisper-server` binary (from `whisper.cpp`, model `base`/`small`, `int8` quant), spawned as a subprocess by the orchestrator's process supervisor and called over HTTP on `127.0.0.1` only. Only invoked after wake-word detection; raw PCM buffer discarded immediately after transcription (see [Security Implications](#security-implications)). Chosen over CGo bindings for build simplicity and crash isolation — see rationale below.
 3. **LLM** — standalone `llama-server` binary (from `llama.cpp`, compiled strictly `GGML_AVX=ON / AVX2=OFF / FMA=OFF / F16C=OFF`), spawned as a subprocess and called over HTTP (streaming) on `127.0.0.1` only. Runtime flags `-t 2` (one thread per physical core — i5-2510M has 2 physical cores, not 4; see [PRD §5](./PRD.md#5-non-functional-requirements--performance-targets)), context capped 1024 tokens, `--mlock` enabled — all passed as subprocess args from `models.yaml`.
 4. **TTS** — Piper via ONNX Runtime CGo, streamed sentence-by-sentence from LLM output for latency.
 5. **UI** — Go `webview` / Neutralinojs, frameless/transparent/always-on-top capable, driven over local WebSocket/native IPC from orchestrator.
@@ -225,6 +226,14 @@ tts:
   config_path: ./models/id_ID-news_tts-medium.onnx.json
   url: https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx
   sha256: <checksum>
+
+wakeword:
+  engine: openwakeword
+  model: hey_jarvis_v0.1        # stock pretrained phrase — no custom "hey naira" model trained yet
+  path: ./models/openwakeword   # cache dir; openwakeword's own downloader fetches its onnx files here, NOT via `naira models download`
+  server_bin: /usr/bin/python3  # interpreter running scripts/openwakeword_server.py, supervised subprocess
+  port: 8082                    # loopback-only HTTP
+  args: ["scripts/openwakeword_server.py", "--model", "hey_jarvis_v0.1", "--cache-dir", "./models/openwakeword", "--threshold", "0.5"]
 ```
 
 - Orchestrator reads `models.yaml` at startup; if a `path` doesn't exist on disk, it refuses to spawn that subsystem's server subprocess and surfaces a clear error (voice + log) rather than letting `whisper-server`/`llama-server` fail on a missing-model-file argument.
@@ -396,7 +405,7 @@ flowchart LR
     "device_id": "..."
   },
   "config": {
-    "wake_word": "hey naira",
+    "wake_word": "hey jarvis",
     "tts_voice": "id_ID-news_tts-medium",
     "thread_override": null,
     "screen_time_threshold_minutes": 60
@@ -558,7 +567,7 @@ graph LR
 
 - **Sandbox enforcement mechanism undecided.** RFC specifies the *policy* (deps-only network, scoped filesystem writes) but not the *enforcement primitive* (Linux namespaces? restricted user + seccomp? Docker, if RAM allows?). Needs a decision before Phase 3.
 - **`EXECUTE_AGENT` timeout value unset.** Needs a concrete number (e.g. 120s) plus child-facing fallback wording tuned so it doesn't feel like a broken promise.
-- **Wake-word engine unspecified.** Implemented as a stub port (`domain.WakeWordDetector`) that never fires — real engine (e.g. Porcupine, openWakeWord) still unselected; pick one compatible with AVX-only, low-RAM constraints. Blocks real end-to-end audio testing until chosen.
+- **Wake-word engine chosen: openWakeWord, stock pretrained phrase.** Implemented as `scripts/openwakeword_server.py` (subprocess, HTTP/loopback, supervised like `whisper-server`/`llama-server`) behind `domain.WakeWordDetector` (`internal/adapter/wakeword.HTTPDetector`); falls back to the never-fires `NoOp` stub if `wakeword.server_bin` is unset in `models.yaml`. Ships with a **stock pretrained phrase** (`hey_jarvis_v0.1`) — openWakeWord only ships fixed phrases (alexa/hey jarvis/hey mycroft/timer); a custom "Hey Naira" model requires running openWakeWord's own training pipeline, not yet done. Picked over Porcupine to avoid a proprietary account/AccessKey and keep the wake-word model swap-in fully open-source; revisit if a custom phrase becomes a hard requirement.
 - **VAD is energy-based, not spectral.** Current implementation is a pure-Go RMS-threshold + adaptive-noise-floor classifier (no new CGo dependency) — simpler and cheaper than a spectral classifier like WebRTC VAD, but more sensitive to background noise (fans, TV, siblings talking) causing false "still speaking" or false endpoint cuts. Upgrade path to WebRTC VAD (small CGo lib, not AVX-sensitive) documented but not yet taken; revisit after Phase 1 real-room testing.
 - **Endpointing timing constants unvalidated.** 700ms silence timeout / ~300ms pre-roll / 20s max-utterance cap are starting values, not measured — need empirical tuning against real child speech patterns (pauses mid-sentence are common) in Phase 1, same as the latency budget above.
 - **Single `EXECUTE_AGENT` job at a time** — what happens if a second request arrives mid-generation? (Queue, or reject with "still working on the last one"?)

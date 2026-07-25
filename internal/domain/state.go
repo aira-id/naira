@@ -56,7 +56,9 @@ type RuntimeConfig struct {
 // DefaultRuntimeConfig matches the defaults documented in RFC.md.
 func DefaultRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
-		WakeWord:                   "hey naira",
+		// Stock openWakeWord pretrained phrase — no custom "hey naira" model
+		// trained yet (RFC.md §5 Concerns). Swap once a custom model exists.
+		WakeWord:                   "hey jarvis",
 		TTSVoice:                   "id_ID-news_tts-medium",
 		ThreadOverride:             nil,
 		ScreenTimeThresholdMinutes: 60,

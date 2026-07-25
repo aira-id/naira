@@ -5,16 +5,18 @@ package domain
 // State: large binary artifacts don't belong in runtime state, and this file
 // is meant to be human-editable (RFC.md#configuration).
 type ModelsConfig struct {
-	STT ModelEntry `yaml:"stt" mapstructure:"stt"`
-	LLM ModelEntry `yaml:"llm" mapstructure:"llm"`
-	TTS ModelEntry `yaml:"tts" mapstructure:"tts"`
+	STT      ModelEntry `yaml:"stt" mapstructure:"stt"`
+	LLM      ModelEntry `yaml:"llm" mapstructure:"llm"`
+	TTS      ModelEntry `yaml:"tts" mapstructure:"tts"`
+	WakeWord ModelEntry `yaml:"wakeword" mapstructure:"wakeword"`
 }
 
 // ModelEntry describes one model artifact. ConfigPath is only used by TTS
 // (Piper ships a companion .onnx.json); it is empty for STT/LLM.
-// ServerBin/Port/Args are only used by STT/LLM, which run as standalone
-// whisper-server/llama-server subprocesses supervised by the orchestrator
-// rather than CGo bindings (RFC.md#architecture--tech-stack, decision note).
+// ServerBin/Port/Args are used by STT/LLM/WakeWord, which run as standalone
+// server subprocesses supervised by the orchestrator (whisper-server,
+// llama-server, and scripts/openwakeword_server.py respectively) rather than
+// CGo bindings (RFC.md#architecture--tech-stack, decision note).
 type ModelEntry struct {
 	Engine     string   `yaml:"engine" mapstructure:"engine"`
 	Model      string   `yaml:"model,omitempty" mapstructure:"model"`
@@ -53,13 +55,14 @@ func (e ModelEntry) Fetchable() bool {
 type Subsystem string
 
 const (
-	SubsystemSTT Subsystem = "stt"
-	SubsystemLLM Subsystem = "llm"
-	SubsystemTTS Subsystem = "tts"
+	SubsystemSTT      Subsystem = "stt"
+	SubsystemLLM      Subsystem = "llm"
+	SubsystemTTS      Subsystem = "tts"
+	SubsystemWakeWord Subsystem = "wakeword"
 )
 
-// Entries returns all three subsystem entries paired with their identifier,
-// in a stable order, for iteration by usecases and CLI output.
+// Entries returns all subsystem entries paired with their identifier, in a
+// stable order, for iteration by usecases and CLI output.
 func (c ModelsConfig) Entries() []struct {
 	Subsystem Subsystem
 	Entry     ModelEntry
@@ -71,5 +74,6 @@ func (c ModelsConfig) Entries() []struct {
 		{SubsystemSTT, c.STT},
 		{SubsystemLLM, c.LLM},
 		{SubsystemTTS, c.TTS},
+		{SubsystemWakeWord, c.WakeWord},
 	}
 }
