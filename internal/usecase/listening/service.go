@@ -86,7 +86,15 @@ func (s *Service) Run(ctx context.Context, onTranscript func(ctx context.Context
 					ring = ring[len(ring)-preRollFrames:]
 				}
 
-				if s.Wake.Detect(frame) {
+				// Gate the wake-word call on VAD: on silent frames, skip
+				// it entirely rather than spend a round-trip (HTTPDetector
+				// is an HTTP call per RFC.md#architecture--tech-stack
+				// decision note) predicting on frames that can't contain a
+				// wake phrase. Ambient noise-floor calibration still runs
+				// continuously via IsSpeech's side effect, so the VAD is
+				// already warmed up by the time the first utterance starts
+				// (previously it only saw frames once LISTENING began).
+				if s.VAD.IsSpeech(frame) && s.Wake.Detect(frame) {
 					st = stateListening
 					utterance = append([][]byte(nil), ring...)
 					silence = 0
