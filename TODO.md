@@ -28,7 +28,14 @@ full design rationale and [PRD.md](./PRD.md) for product requirements.
 ### CLI
 - `naira setup` — first-run parent consent gate (blocks `run` until accepted), text synced with `README.md`.
 - `naira models list` / `naira models download`.
-- `naira run` — stdin text-mode (default, for testing without hardware) and `--audio` (real capture → VAD → endpoint → STT → tag-router → TTS loop, subprocess-supervised STT/LLM spawned automatically if `server_bin` set in `models.yaml`).
+- `naira run` — stdin text-mode (default, for testing without hardware) and `--audio` (real capture → VAD → endpoint → STT → tag-router → TTS loop, subprocess-supervised STT/LLM spawned automatically if `server_bin` set in `models.yaml`). Face UI (see below) always starts alongside either mode.
+
+### Face UI
+- `internal/adapter/ui.Server` — loopback HTTP+WebSocket server (`--ui-port`, default 8090) implementing `domain.UIPublisher`; broadcasts `state_change`/`mouth_amplitude`/`window_mode`/`agent_status` (RFC.md#apis Internal IPC) to every connected client, no CGo.
+- `internal/adapter/ui/static` — face client embedded into the binary via `go:embed`, full-bleed sprite frames (`assets/faces/`, 800x480, copied into `static/faces/`) driving 4 of the 9 `domain.ExpressionTag` states: IDLE (1 frame), LISTENING (2-frame blink loop), THINKING (4-frame cycle), SPEAKING (3-frame set, picked by live `mouth_amplitude` — not a fixed interval, so the mouth actually syncs to TTS output). A "Loading…" `warmup` sprite is the pre-connect splash. HAPPY/SURPRISED/SYMPATHETIC/WORKING/SLEEPY have no art yet and fall back to the original CSS-drawn face. `assets/faces/capturing` and `assets/faces/error` exist but aren't mapped to any state yet (no ExpressionTag fits "actively capturing" or "degraded/error" — see TODO #10 Subsystem-failure UX).
+- Displayed by auto-launching a kiosk-mode browser (`--ui-browser-bin`, default `chromium --app=<url>`; set to `""` to open the URL manually instead).
+- Server caches the last `state_change`/`window_mode` frame and replays it to newly-connected clients (`internal/adapter/ui.Server.lastState`/`lastMode`) — without this, a browser reload would get stuck showing the initial splash forever since broadcast-only WS has no history.
+- **Known gap**: a plain browser tab can't do real OS-level frameless/transparent/always-on-top window management, so `window_mode`'s FLOATING mode only shrinks/corner-docks the face within the page rather than moving a true small overlay window (see RFC.md §5 Concerns).
 
 ### Docs
 - `RFC.md` — full technical design, mermaid diagrams (architecture, sequence flows, rollout), kept in sync with every architectural decision made during implementation (CGo→subprocess, SQLite→flat JSON, VAD addition, etc).
@@ -48,15 +55,15 @@ Roughly in the order they'll block progress:
 2. **Auth/key storage for Claude CLI / OpenCode** — `StubAuth` always returns unauthorized. Needs OS keyring or `0600`-permission config file, per RFC Security Implications.
 3. **`EXECUTE_AGENT` timeout** — no concrete value wired in yet (RFC suggests ~120s) plus child-facing fallback wording.
 4. **Concurrent `EXECUTE_AGENT` request handling** — behavior undefined if a second request arrives mid-generation (queue vs. reject).
-5. **UI layer** — `StubUI` only logs; no real webview/Neutralinojs window, no mouth-sync animation, no floating-overlay mode.
-6. **Real-hardware benchmarking (Phase 1 blocker)** — `<2.0s` voice latency target (endpointing + STT + LLM first token) unverified on actual i5-2510M under `-t 2`; VAD timing constants (700ms silence / 300ms pre-roll / 20s cap) unvalidated against real child speech patterns; now also covers wake-word HTTP round-trip cost per 20ms frame (`internal/adapter/wakeword.HTTPDetector`) and per-sentence `piper` process-spawn latency (`internal/adapter/tts.PiperCLI`), both unbenchmarked on real hardware.
-7. **Energy VAD robustness** — pure RMS-threshold classifier is more sensitive to background noise than a spectral classifier; revisit WebRTC VAD (small CGo lib) after real-room Phase 1 testing.
-8. **`models.yaml` checksums** — `sha256` fields ship blank; must be filled in (or accept manual-copy fallback) before `naira models download` will auto-fetch anything. (N/A for the new `wakeword` entry — openWakeWord manages its own model cache, not fetched via this mechanism.)
-9. **Screen-time `[SLEEPY]` behavior** — logging/threshold-check logic exists in the state service but isn't wired into the orchestrator loop or UI yet.
-10. **Claude CLI cost/rate-limit exposure** — no budget or rate-limiting specified; a chatty child could trigger many generation requests.
-11. **Subsystem-failure UX** — process supervisor marks a subsystem permanently unhealthy after exhausting restart attempts, but no UI-facing degraded-mode expression is wired to that yet.
-12. **RFC.md header placeholders** — `Owner`/`Approver` still `_TBD_`.
-13. **Custom "Hey Naira" wake-word model** — current wake-word engine (openWakeWord) is wired and functional but uses a stock pretrained phrase (`hey_jarvis_v0.1`); a custom "Hey Naira" model requires running openWakeWord's own training pipeline, not yet done.
+5. **Real-hardware benchmarking (Phase 1 blocker)** — `<2.0s` voice latency target (endpointing + STT + LLM first token) unverified on actual i5-2510M under `-t 2`; VAD timing constants (700ms silence / 300ms pre-roll / 20s cap) unvalidated against real child speech patterns; now also covers wake-word HTTP round-trip cost per 20ms frame (`internal/adapter/wakeword.HTTPDetector`) and per-sentence `piper` process-spawn latency (`internal/adapter/tts.PiperCLI`), both unbenchmarked on real hardware.
+6. **Energy VAD robustness** — pure RMS-threshold classifier is more sensitive to background noise than a spectral classifier; revisit WebRTC VAD (small CGo lib) after real-room Phase 1 testing.
+7. **`models.yaml` checksums** — `sha256` fields ship blank; must be filled in (or accept manual-copy fallback) before `naira models download` will auto-fetch anything. (N/A for the new `wakeword` entry — openWakeWord manages its own model cache, not fetched via this mechanism.)
+8. **Screen-time `[SLEEPY]` behavior** — logging/threshold-check logic exists in the state service but isn't wired into the orchestrator loop or UI yet.
+9. **Claude CLI cost/rate-limit exposure** — no budget or rate-limiting specified; a chatty child could trigger many generation requests.
+10. **Subsystem-failure UX** — process supervisor marks a subsystem permanently unhealthy after exhausting restart attempts, but no UI-facing degraded-mode expression is wired to that yet.
+11. **RFC.md header placeholders** — `Owner`/`Approver` still `_TBD_`.
+12. **Custom "Hey Naira" wake-word model** — current wake-word engine (openWakeWord) is wired and functional but uses a stock pretrained phrase (`hey_jarvis_v0.1`); a custom "Hey Naira" model requires running openWakeWord's own training pipeline, not yet done.
+13. **Real OS-level window management for the face UI** — `window_mode` (FLOATING vs FULLSCREEN) currently only changes CSS layout inside the browser tab; it doesn't move/resize/make-transparent an actual OS window (a true 250x250 always-on-top overlay per PRD §4.1). Needs native `webview` (CGo) or a Neutralinojs shell to do this for real.
 
 ## Explicitly Out of Scope (v1)
 

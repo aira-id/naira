@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"naira/internal/adapter/process"
 	"naira/internal/adapter/repository"
 	"naira/internal/adapter/tts"
+	"naira/internal/adapter/ui"
 	"naira/internal/adapter/vad"
 	"naira/internal/adapter/wakeword"
 	"naira/internal/config"
@@ -34,6 +36,9 @@ func newRunCmd() *cobra.Command {
 	var micArgs []string
 	var ttsPlayerBin string
 	var ttsPlayerArgs []string
+	var uiPort int
+	var uiBrowserBin string
+	var uiBrowserArgs []string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -57,7 +62,14 @@ VAD-endpointed listening pipeline. Wake-word detection uses openWakeWord
 (stock pretrained phrase, e.g. "hey jarvis" — no custom "hey naira" model
 trained yet, see RFC.md §5 Concerns) when wakeword.server_bin is set;
 otherwise nothing will be transcribed, by design — the mic-always-open/
-wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
+wake-word-gated privacy guarantee must not be bypassed by a CLI flag.
+
+The face UI (RFC.md#apis Internal IPC) always starts: a loopback HTTP+
+WebSocket server (--ui-port) broadcasting state_change/mouth_amplitude/
+window_mode/agent_status to a static canvas-free CSS face client
+(internal/adapter/ui/static). --ui-browser-bin (default chromium) launches
+it in --app kiosk mode automatically; set to "" to open the URL yourself
+instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := resolveHome()
 			if err != nil {
@@ -142,12 +154,25 @@ wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: tts.server_bin not set in models.yaml — TTS disabled (stub, logs instead of speaking)")
 			}
 
+			uiServer := ui.NewServer(uiPort)
+			if err := uiServer.Start(cmd.Context()); err != nil {
+				return fmt.Errorf("start ui server: %w", err)
+			}
+			if uiBrowserBin != "" {
+				browserArgs := append(append([]string{}, uiBrowserArgs...), "--app="+uiServer.URL())
+				if err := exec.CommandContext(cmd.Context(), uiBrowserBin, browserArgs...).Start(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to launch UI browser (%s): %v — open %s manually\n", uiBrowserBin, err, uiServer.URL())
+				}
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "UI face running at %s — open it manually (--ui-browser-bin was left empty)\n", uiServer.URL())
+			}
+
 			engines := convsvc.Engines{
 				STT:          sttEngine,
 				LLM:          llmEngine,
 				TTS:          ttsEngine,
 				Agent:        engine.StubAgent{},
-				UI:           engine.StubUI{},
+				UI:           uiServer,
 				Connectivity: network.NewChecker(),
 				Auth:         engine.StubAuth{},
 			}
@@ -203,6 +228,9 @@ wake-word-gated privacy guarantee must not be bypassed by a CLI flag.`,
 	cmd.Flags().StringSliceVar(&micArgs, "mic-args", nil, "extra args passed to the recording subprocess (e.g. -D plughw:1,0)")
 	cmd.Flags().StringVar(&ttsPlayerBin, "tts-player-bin", "aplay", "playback subprocess binary for synthesized speech")
 	cmd.Flags().StringSliceVar(&ttsPlayerArgs, "tts-player-args", nil, "extra args passed to the playback subprocess (e.g. -D plughw:1,0)")
+	cmd.Flags().IntVar(&uiPort, "ui-port", 8090, "loopback port the face UI's HTTP+WebSocket server listens on")
+	cmd.Flags().StringVar(&uiBrowserBin, "ui-browser-bin", "chromium", "browser binary launched in --app kiosk mode to display the face UI (empty = don't auto-launch, open the URL manually)")
+	cmd.Flags().StringSliceVar(&uiBrowserArgs, "ui-browser-args", nil, "extra args passed to the UI browser subprocess (e.g. --window-size=340,340)")
 	return cmd
 }
 

@@ -1,0 +1,156 @@
+:root {
+  --face: #ffd76b;
+  --eye: #2b2b2b;
+  --mouth: #2b2b2b;
+  --bg: transparent;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+  font-family: system-ui, sans-serif;
+}
+
+#stage {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 300ms ease;
+}
+
+/* Real sprite frames (assets/faces, 800x480) fill the whole screen — they
+   were drawn as full device-display faces, not small icons. #face (CSS-
+   drawn) is the fallback for expression states with no sprite set yet
+   (HAPPY/SURPRISED/SYMPATHETIC/WORKING/SLEEPY — see internal/adapter/ui
+   README note). app.js toggles data-has-sprite to pick which one shows. */
+#sprite {
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  display: block;
+}
+#face { display: none; }
+#stage[data-has-sprite="false"] #sprite { display: none; }
+#stage[data-has-sprite="false"] #face { display: block; }
+
+/* RFC.md#apis window_mode: FLOATING is a small always-on-top corner overlay;
+   simulated here as a shrunk, corner-docked face since a browser tab can't
+   resize/reposition its own OS window (see RFC.md §5 Concerns / TODO). */
+#stage[data-mode="FLOATING"] {
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 12px;
+}
+#stage[data-mode="FLOATING"] #sprite {
+  width: 140px;
+  height: 140px;
+  object-fit: contain;
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+#stage[data-mode="FLOATING"] #face {
+  width: 140px;
+  height: 140px;
+}
+
+#face {
+  position: relative;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: var(--face);
+  transition: background 300ms ease, transform 200ms ease;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.eye {
+  position: absolute;
+  top: 38%;
+  width: 12%;
+  height: 16%;
+  background: var(--eye);
+  border-radius: 50%;
+  transition: height 150ms ease, transform 150ms ease;
+}
+.eye.left { left: 30%; }
+.eye.right { right: 30%; }
+
+#mouth {
+  position: absolute;
+  left: 50%;
+  bottom: 26%;
+  width: 34%;
+  height: 10%;
+  background: var(--mouth);
+  border-radius: 999px;
+  transform: translateX(-50%) scaleY(0.3);
+  transform-origin: center;
+  transition: height 150ms ease, border-radius 150ms ease, transform 60ms linear;
+}
+
+#agent-badge {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: #fff;
+  background: #555;
+}
+#agent-badge[data-status="DISPATCHED"],
+#agent-badge[data-status="WORKING"] { background: #3a7bd5; }
+#agent-badge[data-status="DONE"] { background: #2e9e4f; }
+#agent-badge[data-status="FAILED"],
+#agent-badge[data-status="OFFLINE_BLOCKED"],
+#agent-badge[data-status="UNAUTHORIZED"] { background: #c0392b; }
+
+/* --- Expression states (RFC.md#apis state_change, PRD §4.1) --- */
+
+#stage[data-state="IDLE"] #face { background: #ffd76b; }
+#stage[data-state="IDLE"] #mouth { transform: translateX(-50%) scaleY(0.15); border-radius: 999px; }
+
+#stage[data-state="LISTENING"] #face { background: #7ed6c8; transform: scale(1.03); }
+#stage[data-state="LISTENING"] .eye { height: 20%; }
+
+#stage[data-state="THINKING"] #face { background: #c7b8ff; }
+#stage[data-state="THINKING"] .eye { height: 8%; top: 42%; }
+#stage[data-state="THINKING"] #mouth { width: 16%; height: 6%; }
+
+#stage[data-state="SPEAKING"] #face { background: #ffb37b; }
+#stage[data-state="SPEAKING"] #mouth {
+  height: calc(8% + var(--amp, 0) * 22%);
+  transform: translateX(-50%) scaleY(1);
+}
+
+#stage[data-state="HAPPY"] #face { background: #a8e05f; }
+#stage[data-state="HAPPY"] .eye { height: 10%; border-radius: 50% 50% 0 0; }
+#stage[data-state="HAPPY"] #mouth { width: 44%; height: 18%; border-radius: 0 0 60px 60px; }
+
+#stage[data-state="SURPRISED"] #face { background: #ffe27b; }
+#stage[data-state="SURPRISED"] .eye { height: 26%; width: 15%; }
+#stage[data-state="SURPRISED"] #mouth { width: 20%; height: 20%; border-radius: 50%; }
+
+#stage[data-state="SYMPATHETIC"] #face { background: #a8c5ff; }
+#stage[data-state="SYMPATHETIC"] .eye { height: 10%; transform: rotate(-8deg); }
+#stage[data-state="SYMPATHETIC"] #mouth { width: 26%; height: 8%; border-radius: 60px 60px 0 0; }
+
+#stage[data-state="WORKING"] #face { background: #ffd76b; animation: pulse 1.2s ease-in-out infinite; }
+#stage[data-state="WORKING"] #mouth { width: 20%; height: 6%; }
+
+#stage[data-state="SLEEPY"] #face { background: #b9a7ff; }
+#stage[data-state="SLEEPY"] .eye { height: 4%; top: 44%; }
+#stage[data-state="SLEEPY"] #mouth { width: 20%; height: 6%; }
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}

@@ -77,3 +77,11 @@ VAD/endpointing/STT/LLM/TTS end-to-end when all four are configured;
 default (no `--audio`) mode reads plain-text lines from stdin in place of
 microphone input, still useful for exercising the orchestrator, state
 persistence, and tag-routing/gating logic without any binaries installed.
+A face UI now always starts alongside either mode: `naira run` serves an
+animated expression client over local HTTP+WebSocket
+(`internal/adapter/ui`, `--ui-port`, default 8090) and launches it in a
+kiosk-mode browser (`--ui-browser-bin`, default `chromium`; pass `""` to
+open the URL yourself instead). A plain browser tab can't yet do real
+OS-level frameless/transparent/always-on-top window management, so the
+floating-overlay mode is simulated inside the page for now — see
+[RFC.md §5 Concerns](./RFC.md#5-concerns-questions-or-known-limitations).
