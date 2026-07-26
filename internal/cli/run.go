@@ -174,9 +174,19 @@ instead.`,
 			// connections and orchestrator being assigned is harmless: an
 			// interrupt received in it is simply a no-op.
 			var orchestrator *convsvc.Service
+			// pttCh feeds listening.Service.PTT (--audio mode only) — a tap
+			// on the face while idle acts as a manual wake-word fallback.
+			// Buffered+non-blocking send: if a PTT is already pending,
+			// dropping a duplicate tap is fine.
+			pttCh := make(chan struct{}, 1)
 			uiServer := ui.NewServer(uiPort, func() {
 				if orchestrator != nil {
 					orchestrator.Interrupt()
+				}
+			}, func() {
+				select {
+				case pttCh <- struct{}{}:
+				default:
 				}
 			})
 			if err := uiServer.Start(cmd.Context()); err != nil {
@@ -214,6 +224,7 @@ instead.`,
 
 				capture := audio.NewMicCapture(micBin, micArgs)
 				listener := listening.New(capture, wakeDetector, vad.NewEnergy(), sttEngine, listening.DefaultOptions())
+				listener.PTT = pttCh
 
 				fmt.Fprintln(cmd.OutOrStdout(), "Naira orchestrator running in --audio mode. Ctrl+C to stop.")
 				wakeCount := 0

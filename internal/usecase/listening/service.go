@@ -38,6 +38,15 @@ type Service struct {
 	VAD     domain.VADEngine
 	STT     domain.STTEngine
 	Opts    Options
+
+	// PTT is an optional manual-trigger fallback (push-to-talk): a signal
+	// received here while idle starts an utterance exactly like a wake-word
+	// detection would, bypassing Wake.Detect entirely. Useful when the wake
+	// word is flaky on real hardware, or as a UI affordance (tap-to-talk).
+	// Left nil (the zero value), it's simply never selected — wake-word
+	// gating is unaffected. Ignored while already listening (an utterance
+	// is already in progress).
+	PTT <-chan struct{}
 }
 
 func New(capture domain.AudioCapture, wake domain.WakeWordDetector, vadEngine domain.VADEngine, stt domain.STTEngine, opts Options) *Service {
@@ -70,10 +79,21 @@ func (s *Service) Run(ctx context.Context, onTranscript func(ctx context.Context
 	var silence time.Duration
 	var elapsed time.Duration
 
+	startListening := func() {
+		st = stateListening
+		utterance = append([][]byte(nil), ring...)
+		silence = 0
+		elapsed = 0
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-s.PTT:
+			if st == stateIdle {
+				startListening()
+			}
 		case frame, ok := <-frames:
 			if !ok {
 				return nil
@@ -95,10 +115,7 @@ func (s *Service) Run(ctx context.Context, onTranscript func(ctx context.Context
 				// already warmed up by the time the first utterance starts
 				// (previously it only saw frames once LISTENING began).
 				if s.VAD.IsSpeech(frame) && s.Wake.Detect(frame) {
-					st = stateListening
-					utterance = append([][]byte(nil), ring...)
-					silence = 0
-					elapsed = 0
+					startListening()
 				}
 
 			case stateListening:

@@ -101,19 +101,23 @@
     ws.onerror = () => ws.close();
   }
 
-  // Tap-to-interrupt (be-more-agent's keyboard-interrupt precedent, adapted
-  // for a browser tab with no reliable keyboard focus): tapping the face
-  // while THINKING/SPEAKING cancels the in-flight LLM/TTS turn.
-  function setupInterruptTap() {
+  // One tap gesture, two purposes depending on current state: cancel the
+  // in-flight turn while THINKING/SPEAKING (be-more-agent's keyboard-
+  // interrupt precedent, adapted for a browser tab with no reliable
+  // keyboard focus), or manually trigger listening while IDLE — a
+  // push-to-talk fallback for when the wake word is unreliable.
+  function setupTapHandler() {
     stage.addEventListener("click", () => {
+      if (!activeWS || activeWS.readyState !== WebSocket.OPEN) return;
       const state = stage.dataset.state;
-      if (state !== "THINKING" && state !== "SPEAKING") return;
-      if (activeWS && activeWS.readyState === WebSocket.OPEN) {
+      if (state === "THINKING" || state === "SPEAKING") {
         activeWS.send(JSON.stringify({ type: "interrupt" }));
+      } else if (state === "IDLE") {
+        activeWS.send(JSON.stringify({ type: "ptt" }));
       }
     });
   }
 
-  setupInterruptTap();
+  setupTapHandler();
   connect();
 })();

@@ -56,22 +56,26 @@ type Server struct {
 	// tap-to-interrupt gesture on the face UI (be-more-agent's keyboard
 	// interrupt precedent, adapted: browser tab has no keyboard focus
 	// guarantee, so a click/tap on the face is the equivalent trigger).
-	// Fixed at construction (not a setter) so there's no data race between
-	// registering it and the first inbound WS message — see cli/run.go for
-	// how the circular Server↔orchestrator dependency is broken.
+	// onPTT is called on {"type":"ptt"} — the same tap gesture, but while
+	// idle: a manual wake-word fallback (push-to-talk). Both fixed at
+	// construction (not setters) so there's no data race between
+	// registering them and the first inbound WS message — see cli/run.go
+	// for how the circular Server↔orchestrator dependency is broken.
 	onInterrupt func()
+	onPTT       func()
 
 	httpServer *http.Server
 }
 
-// NewServer builds a Server bound to 127.0.0.1:port. onInterrupt is called
-// whenever a connected client requests an interrupt; pass a no-op func if
-// the feature isn't needed. Call Start to begin listening.
-func NewServer(port int, onInterrupt func()) *Server {
+// NewServer builds a Server bound to 127.0.0.1:port. onInterrupt/onPTT are
+// called whenever a connected client sends the corresponding message; pass
+// no-op funcs if a feature isn't needed. Call Start to begin listening.
+func NewServer(port int, onInterrupt, onPTT func()) *Server {
 	return &Server{
 		addr:        fmt.Sprintf("127.0.0.1:%d", port),
 		clients:     make(map[*websocket.Conn]struct{}),
 		onInterrupt: onInterrupt,
+		onPTT:       onPTT,
 	}
 }
 
@@ -143,9 +147,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// The client is otherwise display-only; the one thing it can send back
-	// is an interrupt request (tap-to-interrupt on the face). This loop
-	// also detects disconnects so the client set doesn't grow stale.
+	// The client is otherwise display-only; the two things it can send back
+	// are an interrupt request and a push-to-talk trigger (both fired by
+	// the same tap gesture, gated by state client-side — see app.js). This
+	// loop also detects disconnects so the client set doesn't grow stale.
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -154,8 +159,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(data, &in) == nil && in.Type == "interrupt" && s.onInterrupt != nil {
-			s.onInterrupt()
+		if json.Unmarshal(data, &in) != nil {
+			continue
+		}
+		switch in.Type {
+		case "interrupt":
+			if s.onInterrupt != nil {
+				s.onInterrupt()
+			}
+		case "ptt":
+			if s.onPTT != nil {
+				s.onPTT()
+			}
 		}
 	}
 }
