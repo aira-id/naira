@@ -35,6 +35,7 @@ func newRunCmd() *cobra.Command {
 	var audioMode bool
 	var micBin string
 	var micArgs []string
+	var micRate int
 	var ttsPlayerBin string
 	var ttsPlayerArgs []string
 	var uiPort int
@@ -223,6 +224,7 @@ instead.`,
 				defer stop()
 
 				capture := audio.NewMicCapture(micBin, micArgs)
+				capture.CaptureRate = micRate
 				listener := listening.New(capture, wakeDetector, vad.NewEnergy(), sttEngine, listening.DefaultOptions())
 				listener.PTT = pttCh
 
@@ -262,6 +264,7 @@ instead.`,
 	cmd.Flags().BoolVar(&audioMode, "audio", false, "capture real microphone audio via a subprocess (arecord) instead of reading stdin lines")
 	cmd.Flags().StringVar(&micBin, "mic-bin", "arecord", "recording subprocess binary (arecord/parec)")
 	cmd.Flags().StringSliceVar(&micArgs, "mic-args", nil, "extra args passed to the recording subprocess (e.g. -D plughw:1,0)")
+	cmd.Flags().IntVar(&micRate, "mic-rate", 0, "mic's native sample rate in Hz, if it doesn't cleanly support 16kHz (0 = request 16kHz directly, no resampling)")
 	cmd.Flags().StringVar(&ttsPlayerBin, "tts-player-bin", "aplay", "playback subprocess binary for synthesized speech")
 	cmd.Flags().StringSliceVar(&ttsPlayerArgs, "tts-player-args", nil, "extra args passed to the playback subprocess (e.g. -D plughw:1,0)")
 	cmd.Flags().IntVar(&uiPort, "ui-port", 8090, "loopback port the face UI's HTTP+WebSocket server listens on")
