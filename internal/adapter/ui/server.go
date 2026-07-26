@@ -52,15 +52,26 @@ type Server struct {
 	lastState []byte
 	lastMode  []byte
 
+	// onInterrupt is called when a client sends {"type":"interrupt"} — the
+	// tap-to-interrupt gesture on the face UI (be-more-agent's keyboard
+	// interrupt precedent, adapted: browser tab has no keyboard focus
+	// guarantee, so a click/tap on the face is the equivalent trigger).
+	// Fixed at construction (not a setter) so there's no data race between
+	// registering it and the first inbound WS message — see cli/run.go for
+	// how the circular Server↔orchestrator dependency is broken.
+	onInterrupt func()
+
 	httpServer *http.Server
 }
 
-// NewServer builds a Server bound to 127.0.0.1:port. Call Start to begin
-// listening.
-func NewServer(port int) *Server {
+// NewServer builds a Server bound to 127.0.0.1:port. onInterrupt is called
+// whenever a connected client requests an interrupt; pass a no-op func if
+// the feature isn't needed. Call Start to begin listening.
+func NewServer(port int, onInterrupt func()) *Server {
 	return &Server{
-		addr:    fmt.Sprintf("127.0.0.1:%d", port),
-		clients: make(map[*websocket.Conn]struct{}),
+		addr:        fmt.Sprintf("127.0.0.1:%d", port),
+		clients:     make(map[*websocket.Conn]struct{}),
+		onInterrupt: onInterrupt,
 	}
 }
 
@@ -132,11 +143,19 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// Drain and discard any client->server frames (client is display-only);
-	// this also detects disconnects so the client set doesn't grow stale.
+	// The client is otherwise display-only; the one thing it can send back
+	// is an interrupt request (tap-to-interrupt on the face). This loop
+	// also detects disconnects so the client set doesn't grow stale.
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
 			return
+		}
+		var in struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &in) == nil && in.Type == "interrupt" && s.onInterrupt != nil {
+			s.onInterrupt()
 		}
 	}
 }

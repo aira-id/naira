@@ -34,6 +34,9 @@ type Service struct {
 	engines  Engines
 	state    *statesvc.Service
 	gamesDir string
+
+	mu         sync.Mutex
+	turnCancel context.CancelFunc // set while a turn (LLM infer + TTS) is in flight
 }
 
 // New wires an orchestrator. gamesDir is the root under which EXECUTE_AGENT
@@ -42,33 +45,67 @@ func New(engines Engines, state *statesvc.Service, gamesDir string) *Service {
 	return &Service{engines: engines, state: state, gamesDir: gamesDir}
 }
 
+// Interrupt cancels the in-flight turn (LLM generation + TTS playback), if
+// any — the tap-to-interrupt gesture from the face UI. Safe to call at any
+// time, including when no turn is running (no-op).
+func (s *Service) Interrupt() {
+	s.mu.Lock()
+	cancel := s.turnCancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // HandleUtterance runs one already-transcribed turn through the LLM, tag
 // router, and TTS, dispatching EXECUTE_AGENT/OPEN_BROWSER as gated actions.
 // Wake-word detection and STT happen upstream (RFC.md#sequence Core
 // Conversation Flow) — by the time text reaches here, raw audio has already
 // been discarded.
 func (s *Service) HandleUtterance(ctx context.Context, sessionID, transcript string) error {
+	// turnCtx is cancelled by Interrupt() (tap-to-interrupt on the face UI)
+	// — LLM inference, TTS playback, and sound cues all key off it so a tap
+	// stops generation and kills any in-progress subprocess (piper/aplay)
+	// immediately, rather than only suppressing future sentences. UI state
+	// resets below intentionally use the outer ctx, not turnCtx, so they
+	// still take effect after an interrupt.
+	turnCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.turnCancel = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.turnCancel = nil
+		s.mu.Unlock()
+		cancel()
+	}()
+
 	if s.engines.Sound != nil {
-		go func() { _ = s.engines.Sound.Play(ctx, domain.SoundAck) }()
+		go func() { _ = s.engines.Sound.Play(turnCtx, domain.SoundAck) }()
 	}
 	_ = s.engines.UI.SetState(ctx, domain.ExpressionThinking)
 
-	stopThinking := s.startThinkingLoop(ctx)
+	stopThinking := s.startThinkingLoop(turnCtx)
 
 	var sb strings.Builder
 	seq := 0
-	out, err := s.engines.LLM.Infer(ctx, transcript, func(sentence string) {
+	out, err := s.engines.LLM.Infer(turnCtx, transcript, func(sentence string) {
 		stopThinking()
 		sb.WriteString(sentence)
 		_ = s.engines.UI.SpeakChunk(ctx, sentence, seq)
 		seq++
-		if err := s.engines.TTS.Speak(ctx, sentence); err != nil {
+		if err := s.engines.TTS.Speak(turnCtx, sentence); err != nil {
 			// Best-effort: a dropped sentence shouldn't abort the turn.
 			return
 		}
 	})
 	stopThinking()
 	if err != nil {
+		if turnCtx.Err() != nil {
+			// Interrupted, not a real failure — reset and stop quietly.
+			_ = s.engines.UI.SetState(ctx, domain.ExpressionIdle)
+			return nil
+		}
 		return fmt.Errorf("llm infer: %w", err)
 	}
 
@@ -77,9 +114,9 @@ func (s *Service) HandleUtterance(ctx context.Context, sessionID, transcript str
 
 	switch out.Action {
 	case domain.ActionExecuteAgent:
-		return s.dispatchAgent(ctx, sessionID, out)
+		return s.dispatchAgent(turnCtx, sessionID, out)
 	case domain.ActionOpenBrowser:
-		return s.dispatchOpenBrowser(ctx, out)
+		return s.dispatchOpenBrowser(turnCtx, out)
 	case domain.ActionNone:
 		// Nothing further to do — spoken response already streamed to TTS.
 	}

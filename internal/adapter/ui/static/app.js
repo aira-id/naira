@@ -1,6 +1,7 @@
 // Renders the IPC messages documented in RFC.md#apis (state_change,
-// mouth_amplitude, window_mode, agent_status) as a simple animated face.
-// Display-only client: never sends anything meaningful back to the server.
+// mouth_amplitude, window_mode, agent_status, speak_chunk) as a simple
+// animated face. Mostly display-only; the one thing sent back to the
+// server is an interrupt request on tap/click (see setupInterruptTap).
 (() => {
   const stage = document.getElementById("stage");
   const sprite = document.getElementById("sprite");
@@ -87,15 +88,32 @@
     }
   }
 
+  let activeWS = null;
+
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => { activeWS = ws; };
     ws.onmessage = (ev) => {
       try { handle(JSON.parse(ev.data)); } catch (_) { /* ignore malformed frame */ }
     };
-    ws.onclose = () => setTimeout(connect, 1000);
+    ws.onclose = () => { if (activeWS === ws) activeWS = null; setTimeout(connect, 1000); };
     ws.onerror = () => ws.close();
   }
 
+  // Tap-to-interrupt (be-more-agent's keyboard-interrupt precedent, adapted
+  // for a browser tab with no reliable keyboard focus): tapping the face
+  // while THINKING/SPEAKING cancels the in-flight LLM/TTS turn.
+  function setupInterruptTap() {
+    stage.addEventListener("click", () => {
+      const state = stage.dataset.state;
+      if (state !== "THINKING" && state !== "SPEAKING") return;
+      if (activeWS && activeWS.readyState === WebSocket.OPEN) {
+        activeWS.send(JSON.stringify({ type: "interrupt" }));
+      }
+    });
+  }
+
+  setupInterruptTap();
   connect();
 })();

@@ -168,7 +168,17 @@ instead.`,
 				}()
 			}
 
-			uiServer := ui.NewServer(uiPort)
+			// orchestrator is assigned below, after engines (which needs
+			// uiServer) are built — this closure breaks that circular
+			// dependency. The tiny window between Start() accepting
+			// connections and orchestrator being assigned is harmless: an
+			// interrupt received in it is simply a no-op.
+			var orchestrator *convsvc.Service
+			uiServer := ui.NewServer(uiPort, func() {
+				if orchestrator != nil {
+					orchestrator.Interrupt()
+				}
+			})
 			if err := uiServer.Start(cmd.Context()); err != nil {
 				return fmt.Errorf("start ui server: %w", err)
 			}
@@ -191,7 +201,7 @@ instead.`,
 				Connectivity: network.NewChecker(),
 				Auth:         engine.StubAuth{},
 			}
-			orchestrator := convsvc.New(engines, stateSvc, config.GamesDir(home))
+			orchestrator = convsvc.New(engines, stateSvc, config.GamesDir(home))
 
 			sessionID, err := stateSvc.StartSession(cmd.Context())
 			if err != nil {
